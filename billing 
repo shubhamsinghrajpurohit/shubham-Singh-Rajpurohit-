@@ -1,0 +1,411 @@
+import { useState, useEffect } from "react";
+
+// ─── localStorage helpers (drop-in replacement for window.storage) ────────────
+const storage = {
+  set: (key, value) => { try { localStorage.setItem(key, value); return true; } catch { return false; } },
+  get: (key) => { try { const v = localStorage.getItem(key); return v !== null ? { value: v } : null; } catch { return null; } },
+  delete: (key) => { try { localStorage.removeItem(key); return true; } catch { return false; } },
+  list: (prefix = "") => {
+    try {
+      const keys = Object.keys(localStorage).filter((k) => k.startsWith(prefix));
+      return { keys };
+    } catch { return { keys: [] }; }
+  },
+};
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const COLORS = {
+  ink: "#1A1A2E", slate: "#2D3561", accent: "#C84B31", accentLight: "#F4A261",
+  surface: "#F8F7F4", paper: "#FFFFFF", muted: "#8A8FA8", border: "#E2E0DB", success: "#2A9D8F",
+};
+const FONTS = {
+  display: "'Georgia', 'Times New Roman', serif",
+  body: "'Inter', 'Segoe UI', sans-serif",
+  mono: "'JetBrains Mono', 'Courier New', monospace",
+};
+const STATUS_COLORS = {
+  draft:   { bg: "#E2E0DB", text: "#8A8FA8" },
+  sent:    { bg: "#D6EAF8", text: "#2471A3" },
+  paid:    { bg: "#D5F5E3", text: "#1E8449" },
+  overdue: { bg: "#FADBD8", text: "#C0392B" },
+};
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const defaultItem = () => ({ id: Date.now() + Math.random(), desc: "", qty: 1, rate: 0 });
+const fmt = (n) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
+const genInvoiceNo = () => "INV-" + Math.random().toString(36).slice(2, 7).toUpperCase();
+const newBill = () => ({
+  invoiceNo: genInvoiceNo(),
+  date: new Date().toISOString().slice(0, 10),
+  dueDate: "", from: { name: "", email: "", address: "" },
+  to: { name: "", email: "", address: "" },
+  items: [defaultItem()], notes: "", taxRate: 0, savedAt: null, status: "draft",
+});
+const calcTotals = (bill) => {
+  const subtotal = bill.items.reduce((s, it) => s + it.qty * it.rate, 0);
+  const tax = subtotal * (bill.taxRate / 100);
+  return { subtotal, tax, total: subtotal + tax };
+};
+
+// ─── Component ────────────────────────────────────────────────────────────────
+export default function BillCreator() {
+  const [bills, setBills] = useState([]);
+  const [activeBill, setActiveBill] = useState(newBill());
+  const [view, setView] = useState("edit");
+  const [copied, setCopied] = useState(false);
+  const [saveMsg, setSaveMsg] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+
+  // Load saved bills on mount
+  useEffect(() => {
+    const { keys } = storage.list("bill:");
+    const loaded = keys.map((key) => {
+      const r = storage.get(key);
+      return r ? JSON.parse(r.value) : null;
+    }).filter(Boolean);
+    loaded.sort((a, b) => (b.savedAt || "").localeCompare(a.savedAt || ""));
+    setBills(loaded);
+    setLoading(false);
+  }, []);
+
+  const saveBill = (bill) => {
+    const toSave = { ...bill, savedAt: new Date().toISOString() };
+    const key = "bill:" + toSave.invoiceNo;
+    const ok = storage.set(key, JSON.stringify(toSave));
+    if (ok) {
+      setActiveBill(toSave);
+      setBills((prev) => [toSave, ...prev.filter((b) => b.invoiceNo !== toSave.invoiceNo)]);
+      setSaveMsg("Saved!");
+    } else {
+      setSaveMsg("Save failed");
+    }
+    setTimeout(() => setSaveMsg(""), 2000);
+  };
+
+  const deleteBill = (invoiceNo) => {
+    storage.delete("bill:" + invoiceNo);
+    setBills((prev) => prev.filter((b) => b.invoiceNo !== invoiceNo));
+    if (activeBill.invoiceNo === invoiceNo) { setActiveBill(newBill()); setView("edit"); }
+    setDeleteConfirm(null);
+  };
+
+  const setField = (path, value) => {
+    const keys = path.split(".");
+    setActiveBill((prev) => {
+      const next = { ...prev };
+      let obj = next;
+      for (let i = 0; i < keys.length - 1; i++) { obj[keys[i]] = { ...obj[keys[i]] }; obj = obj[keys[i]]; }
+      obj[keys[keys.length - 1]] = value;
+      return next;
+    });
+  };
+
+  const setItem = (id, field, value) =>
+    setActiveBill((prev) => ({ ...prev, items: prev.items.map((it) => it.id === id ? { ...it, [field]: value } : it) }));
+
+  const { subtotal, tax, total } = calcTotals(activeBill);
+
+  // ─── Styles ───────────────────────────────────────────────────────────────
+  const s = {
+    root: { fontFamily: FONTS.body, background: COLORS.surface, minHeight: "100vh", color: COLORS.ink, display: "flex", flexDirection: "column" },
+    header: { background: COLORS.slate, color: "#fff", padding: "16px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: `4px solid ${COLORS.accent}`, flexShrink: 0 },
+    headerTitle: { fontFamily: FONTS.display, fontSize: 22, fontWeight: "normal", margin: 0 },
+    headerSub: { fontSize: 11, color: COLORS.accentLight, marginTop: 2, fontFamily: FONTS.mono, letterSpacing: "0.08em" },
+    body: { display: "flex", flex: 1, overflow: "hidden" },
+    sidebar: { width: 260, background: COLORS.ink, color: "#fff", display: "flex", flexDirection: "column", flexShrink: 0 },
+    sidebarHeader: { padding: "14px 16px", fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: COLORS.muted, fontFamily: FONTS.mono, borderBottom: "1px solid rgba(255,255,255,0.08)", display: "flex", justifyContent: "space-between", alignItems: "center" },
+    sidebarNewBtn: { padding: "4px 10px", background: COLORS.accent, color: "#fff", border: "none", borderRadius: 3, fontSize: 11, fontWeight: 700, cursor: "pointer" },
+    sidebarList: { flex: 1, overflowY: "auto" },
+    sidebarItem: (active) => ({ padding: "12px 16px", borderBottom: "1px solid rgba(255,255,255,0.06)", cursor: "pointer", background: active ? "rgba(200,75,49,0.18)" : "transparent", borderLeft: active ? `3px solid ${COLORS.accent}` : "3px solid transparent" }),
+    sidebarItemNo: { fontSize: 11, fontFamily: FONTS.mono, color: COLORS.accentLight, marginBottom: 3 },
+    sidebarItemName: { fontSize: 13, fontWeight: 600, color: "#fff", marginBottom: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+    sidebarItemMeta: { fontSize: 11, color: COLORS.muted, display: "flex", justifyContent: "space-between", alignItems: "center" },
+    main: { flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" },
+    tabs: { display: "flex", background: COLORS.ink, flexShrink: 0 },
+    tab: (active) => ({ padding: "10px 20px", fontSize: 12, fontWeight: 600, cursor: "pointer", border: "none", background: active ? COLORS.accent : "transparent", color: active ? "#fff" : COLORS.muted, letterSpacing: "0.05em", textTransform: "uppercase" }),
+    content: { flex: 1, padding: "20px 20px 80px", maxWidth: 800, width: "100%", margin: "0 auto", boxSizing: "border-box" },
+    card: { background: COLORS.paper, border: `1px solid ${COLORS.border}`, borderRadius: 6, marginBottom: 16, overflow: "hidden" },
+    cardHeader: { background: COLORS.ink, color: "#fff", padding: "9px 18px", fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", fontFamily: FONTS.mono },
+    cardBody: { padding: "18px" },
+    row2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 },
+    row3: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 12 },
+    label: { display: "block", fontSize: 10, fontWeight: 700, color: COLORS.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 },
+    input: { width: "100%", padding: "8px 11px", border: `1.5px solid ${COLORS.border}`, borderRadius: 4, fontSize: 13, fontFamily: FONTS.body, color: COLORS.ink, background: COLORS.surface, outline: "none", boxSizing: "border-box" },
+    textarea: { width: "100%", padding: "8px 11px", border: `1.5px solid ${COLORS.border}`, borderRadius: 4, fontSize: 13, fontFamily: FONTS.body, color: COLORS.ink, background: COLORS.surface, outline: "none", boxSizing: "border-box", minHeight: 70, resize: "vertical" },
+    table: { width: "100%", borderCollapse: "collapse" },
+    th: { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: COLORS.muted, padding: "7px 8px", textAlign: "left", borderBottom: `2px solid ${COLORS.border}` },
+    td: { padding: "6px 5px", verticalAlign: "middle" },
+    tableInput: { width: "100%", padding: "6px 9px", border: `1.5px solid ${COLORS.border}`, borderRadius: 4, fontSize: 13, fontFamily: FONTS.body, background: COLORS.surface, color: COLORS.ink, boxSizing: "border-box" },
+    addBtn: { marginTop: 10, padding: "7px 16px", background: "transparent", border: `1.5px dashed ${COLORS.slate}`, borderRadius: 4, color: COLORS.slate, fontSize: 12, fontWeight: 600, cursor: "pointer" },
+    removeBtn: { background: "none", border: "none", color: COLORS.accent, fontSize: 17, cursor: "pointer", padding: "3px 7px", lineHeight: 1 },
+    summaryWrap: { display: "flex", justifyContent: "flex-end", marginTop: 8 },
+    summaryBox: { minWidth: 240, borderTop: `2px solid ${COLORS.border}`, paddingTop: 12 },
+    summaryRow: { display: "flex", justifyContent: "space-between", padding: "3px 0", fontSize: 13 },
+    summaryTotal: { display: "flex", justifyContent: "space-between", padding: "9px 0 3px", borderTop: `2px solid ${COLORS.ink}`, marginTop: 5, fontWeight: 700, fontSize: 17, fontFamily: FONTS.display },
+    actionBar: { position: "sticky", bottom: 0, background: COLORS.ink, padding: "12px 24px", display: "flex", gap: 10, justifyContent: "flex-end", alignItems: "center" },
+    btnPrimary: { padding: "9px 20px", background: COLORS.accent, color: "#fff", border: "none", borderRadius: 4, fontSize: 13, fontWeight: 700, cursor: "pointer" },
+    btnSecondary: { padding: "9px 20px", background: "transparent", color: "#fff", border: "1.5px solid rgba(255,255,255,0.25)", borderRadius: 4, fontSize: 13, fontWeight: 600, cursor: "pointer" },
+    statusBadge: (status) => ({ display: "inline-block", padding: "2px 8px", borderRadius: 999, fontSize: 10, fontWeight: 700, letterSpacing: "0.07em", textTransform: "uppercase", background: STATUS_COLORS[status]?.bg || "#eee", color: STATUS_COLORS[status]?.text || "#333" }),
+    emptyState: { padding: "32px 16px", textAlign: "center", color: COLORS.muted, fontSize: 13 },
+    previewPage: { background: COLORS.paper, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: "36px 44px" },
+    previewBanner: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 28, paddingBottom: 18, borderBottom: `3px solid ${COLORS.accent}` },
+    previewTitle: { fontFamily: FONTS.display, fontSize: 32, color: COLORS.slate, margin: 0, letterSpacing: "-1px" },
+    previewMeta: { textAlign: "right", fontSize: 12, lineHeight: 1.9 },
+    previewLabel: { color: COLORS.muted, textTransform: "uppercase", fontSize: 9, letterSpacing: "0.1em", fontWeight: 700 },
+    previewParties: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 28, marginBottom: 28 },
+    previewPartyTitle: { fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: COLORS.muted, marginBottom: 5 },
+    previewPartyName: { fontWeight: 700, fontSize: 14, marginBottom: 2 },
+    previewItemsTable: { width: "100%", borderCollapse: "collapse", marginBottom: 20 },
+    previewTh: { fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", color: COLORS.muted, padding: "5px 9px", textAlign: "left", borderBottom: `1px solid ${COLORS.border}` },
+    previewTd: { padding: "9px 9px", fontSize: 12, borderBottom: `1px solid ${COLORS.border}`, verticalAlign: "top" },
+    previewTotalBox: { background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 4, padding: "14px 20px", minWidth: 220 },
+  };
+
+  const StatusBadge = ({ status }) => <span style={s.statusBadge(status)}>{status}</span>;
+  const Field = ({ label, path, type = "text", placeholder }) => (
+    <div>
+      <label style={s.label}>{label}</label>
+      <input style={s.input} type={type} placeholder={placeholder}
+        value={path.split(".").reduce((o, k) => o?.[k] ?? "", activeBill)}
+        onChange={(e) => setField(path, e.target.value)} />
+    </div>
+  );
+
+  // ─── Sidebar ──────────────────────────────────────────────────────────────
+  const Sidebar = () => (
+    <div style={s.sidebar}>
+      <div style={s.sidebarHeader}>
+        <span>Bills ({bills.length})</span>
+        <button style={s.sidebarNewBtn} onClick={() => { setActiveBill(newBill()); setView("edit"); }}>+ New</button>
+      </div>
+      <div style={s.sidebarList}>
+        {loading && <div style={s.emptyState}>Loading…</div>}
+        {!loading && bills.length === 0 && <div style={s.emptyState}>No saved bills yet.<br />Fill in the form and click Save.</div>}
+        {bills.map((b) => {
+          const { total: t } = calcTotals(b);
+          const isActive = b.invoiceNo === activeBill.invoiceNo;
+          return (
+            <div key={b.invoiceNo} style={s.sidebarItem(isActive)} onClick={() => { setActiveBill(b); setView("edit"); }}>
+              <div style={s.sidebarItemNo}>{b.invoiceNo}</div>
+              <div style={s.sidebarItemName}>{b.to?.name || "Unknown Client"}</div>
+              <div style={s.sidebarItemMeta}>
+                <StatusBadge status={b.status || "draft"} />
+                <span style={{ fontFamily: FONTS.mono, fontSize: 12, color: COLORS.accentLight }}>{fmt(t)}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  // ─── Editor ───────────────────────────────────────────────────────────────
+  const EditorView = () => (
+    <div style={s.content}>
+      <div style={s.card}>
+        <div style={s.cardHeader}>Bill Details</div>
+        <div style={s.cardBody}>
+          <div style={s.row3}>
+            <Field label="Invoice Number" path="invoiceNo" placeholder="INV-XXXXX" />
+            <Field label="Issue Date" path="date" type="date" />
+            <Field label="Due Date" path="dueDate" type="date" />
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <label style={s.label}>Status</label>
+            <select style={{ ...s.input, width: 140 }} value={activeBill.status || "draft"} onChange={(e) => setField("status", e.target.value)}>
+              <option value="draft">Draft</option>
+              <option value="sent">Sent</option>
+              <option value="paid">Paid</option>
+              <option value="overdue">Overdue</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div style={s.row2}>
+        {[["From (Your Info)", "from", "Your Business"], ["Bill To (Client)", "to", "Client Name"]].map(([title, path, ph]) => (
+          <div key={path} style={s.card}>
+            <div style={s.cardHeader}>{title}</div>
+            <div style={s.cardBody}>
+              <div style={{ marginBottom: 12 }}><Field label="Name / Company" path={`${path}.name`} placeholder={ph} /></div>
+              <div style={{ marginBottom: 12 }}><Field label="Email" path={`${path}.email`} type="email" placeholder="email@example.com" /></div>
+              <div>
+                <label style={s.label}>Address</label>
+                <textarea style={s.textarea} placeholder="Street, City, State ZIP"
+                  value={activeBill[path]?.address || ""}
+                  onChange={(e) => setField(`${path}.address`, e.target.value)} />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div style={s.card}>
+        <div style={s.cardHeader}>Line Items</div>
+        <div style={s.cardBody}>
+          <table style={s.table}>
+            <thead>
+              <tr>
+                <th style={{ ...s.th, width: "48%" }}>Description</th>
+                <th style={{ ...s.th, width: "14%" }}>Qty</th>
+                <th style={{ ...s.th, width: "20%" }}>Rate ($)</th>
+                <th style={{ ...s.th, width: "14%" }}>Amount</th>
+                <th style={{ ...s.th, width: "4%" }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {activeBill.items.map((item) => (
+                <tr key={item.id}>
+                  <td style={s.td}><input style={s.tableInput} value={item.desc} placeholder="Service or product" onChange={(e) => setItem(item.id, "desc", e.target.value)} /></td>
+                  <td style={s.td}><input style={s.tableInput} type="number" min="0" value={item.qty} onChange={(e) => setItem(item.id, "qty", parseFloat(e.target.value) || 0)} /></td>
+                  <td style={s.td}><input style={s.tableInput} type="number" min="0" step="0.01" value={item.rate} onChange={(e) => setItem(item.id, "rate", parseFloat(e.target.value) || 0)} /></td>
+                  <td style={{ ...s.td, fontFamily: FONTS.mono, fontSize: 12, fontWeight: 600 }}>{fmt(item.qty * item.rate)}</td>
+                  <td style={s.td}>{activeBill.items.length > 1 && <button style={s.removeBtn} onClick={() => setActiveBill(p => ({ ...p, items: p.items.filter(i => i.id !== item.id) }))}>×</button>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <button style={s.addBtn} onClick={() => setActiveBill(p => ({ ...p, items: [...p.items, defaultItem()] }))}>+ Add Line Item</button>
+          <div style={s.summaryWrap}>
+            <div style={s.summaryBox}>
+              <div style={s.summaryRow}><span style={{ color: COLORS.muted }}>Subtotal</span><span style={{ fontFamily: FONTS.mono }}>{fmt(subtotal)}</span></div>
+              <div style={{ ...s.summaryRow, alignItems: "center" }}>
+                <span style={{ color: COLORS.muted }}>Tax</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <input style={{ ...s.tableInput, width: 55, textAlign: "right" }} type="number" min="0" max="100" value={activeBill.taxRate} onChange={(e) => setField("taxRate", parseFloat(e.target.value) || 0)} />
+                  <span style={{ color: COLORS.muted }}>%</span>
+                </div>
+              </div>
+              {activeBill.taxRate > 0 && <div style={s.summaryRow}><span style={{ color: COLORS.muted }}>Tax ({activeBill.taxRate}%)</span><span style={{ fontFamily: FONTS.mono }}>{fmt(tax)}</span></div>}
+              <div style={s.summaryTotal}><span>Total Due</span><span style={{ color: COLORS.accent, fontFamily: FONTS.mono }}>{fmt(total)}</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={s.card}>
+        <div style={s.cardHeader}>Notes / Payment Terms</div>
+        <div style={s.cardBody}>
+          <textarea style={s.textarea} placeholder="Payment due within 30 days. Thank you for your business!" value={activeBill.notes} onChange={(e) => setField("notes", e.target.value)} />
+        </div>
+      </div>
+
+      {activeBill.savedAt && (
+        <div style={{ textAlign: "right", marginTop: 4 }}>
+          {deleteConfirm === activeBill.invoiceNo ? (
+            <span style={{ fontSize: 13 }}>
+              <span style={{ color: COLORS.muted, marginRight: 10 }}>Delete this bill?</span>
+              <button style={{ ...s.btnPrimary, fontSize: 12, padding: "6px 14px", marginRight: 6 }} onClick={() => deleteBill(activeBill.invoiceNo)}>Yes, Delete</button>
+              <button style={{ ...s.btnSecondary, fontSize: 12, padding: "6px 14px", background: COLORS.surface, color: COLORS.ink }} onClick={() => setDeleteConfirm(null)}>Cancel</button>
+            </span>
+          ) : (
+            <button style={{ background: "none", border: "none", color: COLORS.muted, fontSize: 12, cursor: "pointer", textDecoration: "underline" }} onClick={() => setDeleteConfirm(activeBill.invoiceNo)}>Delete bill</button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
+  // ─── Preview ──────────────────────────────────────────────────────────────
+  const PreviewView = () => (
+    <div style={s.content}>
+      <div style={s.previewPage}>
+        <div style={s.previewBanner}>
+          <div>
+            <h1 style={s.previewTitle}>Invoice</h1>
+            {activeBill.from.name && <div style={{ marginTop: 5, fontWeight: 700, fontSize: 15, color: COLORS.slate }}>{activeBill.from.name}</div>}
+            <div style={{ marginTop: 8 }}><StatusBadge status={activeBill.status || "draft"} /></div>
+          </div>
+          <div style={s.previewMeta}>
+            <div style={s.previewLabel}>Invoice No.</div>
+            <div style={{ fontFamily: FONTS.mono, fontWeight: 700, fontSize: 14, marginBottom: 7 }}>{activeBill.invoiceNo}</div>
+            <div style={s.previewLabel}>Date</div>
+            <div style={{ marginBottom: 3 }}>{activeBill.date || "—"}</div>
+            {activeBill.dueDate && <><div style={s.previewLabel}>Due</div><div>{activeBill.dueDate}</div></>}
+          </div>
+        </div>
+        <div style={s.previewParties}>
+          {[["From", activeBill.from], ["Bill To", activeBill.to]].map(([label, party]) => (
+            <div key={label}>
+              <div style={s.previewPartyTitle}>{label}</div>
+              <div style={s.previewPartyName}>{party.name || "—"}</div>
+              {party.email && <div style={{ fontSize: 12, color: COLORS.muted }}>{party.email}</div>}
+              {party.address && <div style={{ fontSize: 12, color: COLORS.muted, whiteSpace: "pre-line", marginTop: 3 }}>{party.address}</div>}
+            </div>
+          ))}
+        </div>
+        <table style={s.previewItemsTable}>
+          <thead>
+            <tr>
+              <th style={{ ...s.previewTh, width: "50%" }}>Description</th>
+              <th style={{ ...s.previewTh, width: "12%", textAlign: "right" }}>Qty</th>
+              <th style={{ ...s.previewTh, width: "18%", textAlign: "right" }}>Rate</th>
+              <th style={{ ...s.previewTh, width: "20%", textAlign: "right" }}>Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {activeBill.items.map((it) => (
+              <tr key={it.id}>
+                <td style={s.previewTd}>{it.desc || <span style={{ color: COLORS.muted }}>—</span>}</td>
+                <td style={{ ...s.previewTd, textAlign: "right" }}>{it.qty}</td>
+                <td style={{ ...s.previewTd, textAlign: "right", fontFamily: FONTS.mono }}>{fmt(it.rate)}</td>
+                <td style={{ ...s.previewTd, textAlign: "right", fontFamily: FONTS.mono, fontWeight: 600 }}>{fmt(it.qty * it.rate)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <div style={s.previewTotalBox}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 7 }}><span style={{ color: COLORS.muted }}>Subtotal</span><span style={{ fontFamily: FONTS.mono }}>{fmt(subtotal)}</span></div>
+            {activeBill.taxRate > 0 && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 7 }}><span style={{ color: COLORS.muted }}>Tax ({activeBill.taxRate}%)</span><span style={{ fontFamily: FONTS.mono }}>{fmt(tax)}</span></div>}
+            <div style={{ display: "flex", justifyContent: "space-between", fontFamily: FONTS.display, fontWeight: 700, fontSize: 18, borderTop: `2px solid ${COLORS.ink}`, paddingTop: 9, marginTop: 3 }}>
+              <span>Total</span><span style={{ color: COLORS.accent }}>{fmt(total)}</span>
+            </div>
+          </div>
+        </div>
+        {activeBill.notes && (
+          <div style={{ marginTop: 28, paddingTop: 16, borderTop: `1px solid ${COLORS.border}`, fontSize: 12, color: COLORS.muted, whiteSpace: "pre-line" }}>
+            <div style={s.previewPartyTitle}>Notes</div>
+            {activeBill.notes}
+          </div>
+        )}
+        <div style={{ marginTop: 36, textAlign: "center" }}>
+          <span style={{ display: "inline-block", padding: "2px 12px", background: COLORS.accent, color: "#fff", borderRadius: 999, fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>Thank you for your business</span>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ─── Render ───────────────────────────────────────────────────────────────
+  return (
+    <div style={s.root}>
+      <div style={s.header}>
+        <div>
+          <h1 style={s.headerTitle}>Billing</h1>
+          <div style={s.headerSub}>INVOICE CREATOR</div>
+        </div>
+        <div style={{ fontFamily: FONTS.mono, fontSize: 12, color: COLORS.accentLight }}>{activeBill.invoiceNo}</div>
+      </div>
+      <div style={s.body}>
+        <Sidebar />
+        <div style={s.main}>
+          <div style={s.tabs}>
+            <button style={s.tab(view === "edit")} onClick={() => setView("edit")}>✏ Edit</button>
+            <button style={s.tab(view === "preview")} onClick={() => setView("preview")}>👁 Preview</button>
+          </div>
+          {view === "edit" ? <EditorView /> : <PreviewView />}
+          <div style={s.actionBar}>
+            {saveMsg && <span style={{ fontSize: 12, color: saveMsg === "Saved!" ? "#6EE7B7" : "#FCA5A5", marginRight: 8 }}>{saveMsg}</span>}
+            <button style={s.btnSecondary} onClick={() => {
+              navigator.clipboard.writeText(`Invoice ${activeBill.invoiceNo}\nFrom: ${activeBill.from.name}\nTo: ${activeBill.to.name}\nTotal: ${fmt(total)}`).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
+            }}>{copied ? "✓ Copied!" : "Copy Summary"}</button>
+            <button style={s.btnSecondary} onClick={() => window.print()}>🖨 Print</button>
+            <button style={s.btnPrimary} onClick={() => saveBill(activeBill)}>💾 Save Bill</button>
+          </div>
+        </div>
+      </div>
+      <style>{`input:focus,textarea:focus,select:focus{border-color:#2D3561!important;outline:none}*{box-sizing:border-box}@media print{body>*{display:none!important}}`}</style>
+    </div>
+  );
+}
